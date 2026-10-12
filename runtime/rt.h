@@ -57,7 +57,7 @@ extern uint32_t g_bus_mhz;                        // 243 on the Wii, 162 on the 
 static inline uint64_t tb_hz() { return (uint64_t)g_bus_mhz * 250000; }
 
 // ---- the OS layer (os.cpp) --------------------------------------------------------------
-void os_report_running(int depth);                // stderr: where the running guest thread is
+void os_report_running(int depth);                // stderr: where the running guest thread is, and the parked ones
 void os_install();                                // hooks, time
 void os_start_main(uint32_t entry);               // run __start on a guest host thread, and return
 void os_raise();                                  // a device changed its interrupt line

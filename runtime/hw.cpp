@@ -157,9 +157,10 @@ uint32_t dsp_from_cpu = 0;                           // the CPU's mailbox (bit 3
 int dsp_boot_mails = 0;
 bool dsp_cmdlist_next = false;
 uint64_t dsp_frames = 0;
-// WIIKIT_AUDIODBG: when the AI interrupt was last raised and acknowledged,
+// When the AI interrupt was last raised and acknowledged (ai_tick paces a
+// late block by the acknowledgement; WIIKIT_AUDIODBG reports both),
 // and when the DSP last got a command list (the chain behind each frame)
-std::chrono::steady_clock::time_point dbg_aid_raised, dbg_aid_acked, dbg_cmdlist;
+std::chrono::steady_clock::time_point dbg_aid_raised, aid_acked, dbg_cmdlist;
 uint16_t dsp_ar[8];                                  // 0x20-0x2A: ARAM DMA
 std::vector<uint8_t> aram;                           // the GameCube's ARAM (hw_init)
 bool ar_busy = false;                                // an ARAM DMA runs until ar_done
@@ -214,7 +215,7 @@ void dsp_cr_write(uint16_t v) {
     uint16_t old = dsp_cr;
     if (dsp_dbg) rt_log("dsp: control %04X -> %04X", old, v);
     uint16_t keep = (uint16_t)(old & (DSP_AIDINT | DSP_ARINT | DSP_DSPINT) & ~v);  // write 1 to clear
-    if ((old & DSP_AIDINT) && (v & DSP_AIDINT)) dbg_aid_acked = std::chrono::steady_clock::now();
+    if ((old & DSP_AIDINT) && (v & DSP_AIDINT)) aid_acked = std::chrono::steady_clock::now();
     keep |= old & DSP_DMA;                           // read only: an ARAM DMA runs
     dsp_cr = (uint16_t)((v & ~(DSP_AIDINT | DSP_ARINT | DSP_DSPINT | DSP_RES | DSP_PIINT | DSP_DMA)) | keep);
     if (v & DSP_RES) {
@@ -268,6 +269,9 @@ HostClock::time_point ai_dma_next, ai_dma_block_start;
 std::chrono::nanoseconds ai_dma_period{0};
 uint32_t ai_cr = 0;
 uint64_t ai_frames_then = ~0ull;                      // AX frames mixed when the last block started
+std::atomic<bool> ai_in_handler{false};               // the guest is in __AIDHandler (hw_init hooks it)
+HostClock::time_point ai_wait_from{};                 // since when the due block has waited (ai_tick)
+PPCFunc orig_AIDHandler;
 // A frame is ready once mixed and once the guest has taken the DSP's
 // interrupt for it: AX marks the DSP free there, and at an AI interrupt that
 // comes first it skips the frame (on the console the DSP is done long before
@@ -297,7 +301,7 @@ void ai_dma_block() {                                // a block starts: its samp
             auto ms = [&](std::chrono::steady_clock::time_point t) { return std::chrono::duration<double, std::milli>(now - t).count(); };
             rt_log("audio: a block without its AX frame (%.3f s): AI interrupt raised %.1f ms ago, acknowledged %.1f ms ago, "
                    "last command list %.1f ms ago; DSP control %04X, %zu mails to the CPU",
-                   os_tb_now() / 60750000.0, ms(dbg_aid_raised), ms(dbg_aid_acked), ms(dbg_cmdlist), dsp_cr, dsp_to_cpu.size());
+                   os_tb_now() / 60750000.0, ms(dbg_aid_raised), ms(aid_acked), ms(dbg_cmdlist), dsp_cr, dsp_to_cpu.size());
             os_report_running(10);
         }
     }
@@ -921,14 +925,30 @@ std::chrono::steady_clock::time_point ai_tick() {
         // game's thread may be decoding a frame's vertices), and a block
         // without its frame is a gap in the sound. The host's audio queue
         // absorbs the wait.
+        // It waits at most 50 ms, counted from when it began to wait: a
+        // block late on the schedule (the AI catching up) may still wait for
+        // its frame.
         bool ready = ai_frame_ready();
-        if (!ready && now - ai_dma_next < std::chrono::milliseconds(50))
-            return now + std::chrono::microseconds(250);
+        if (ai_wait_from == HostClock::time_point{}) ai_wait_from = now;
+        bool patient = now - ai_wait_from < std::chrono::milliseconds(50);
+        if (!ready && patient) return now + std::chrono::microseconds(250);
+        // Catching up, a block does not start while the guest is still in
+        // the last one's interrupt (__AIDHandler, where the executable names
+        // it), nor sooner than half a block after it took it. NW4R's AI
+        // callback enables interrupts once it has had AX mix (The Last
+        // Story): its frame is ready there, and a block at once would be
+        // taken inside the callback, which the SDK's AI handler skips while
+        // it runs: no frame for that block, and a gap of 50 ms.
+        if (ready && ai_in_handler.load() && patient) return now + std::chrono::microseconds(250);
+        auto earliest = std::max(ai_dma_block_start, aid_acked) + ai_dma_period / 2;
+        if (ready && now < earliest) return earliest;
+        ai_wait_from = HostClock::time_point{};
         ai_dma_block();
-        // a late block is followed by the next as soon as it is mixed, back
-        // on the schedule, so the AI keeps real time; a block given up on (the
-        // game stopped mixing) or a long stall starts it afresh: catching up
-        // then would only give up on the blocks after it too
+        // a late block is followed by the next as soon as it is mixed (and
+        // paced so), back on the schedule, so the AI keeps real time; a block
+        // given up on (the game stopped mixing) or a long stall starts it
+        // afresh: catching up then would only give up on the blocks after it
+        // too
         ai_dma_next += ai_dma_period;
         if (!ready || now - ai_dma_next > std::chrono::milliseconds(100)) ai_dma_next = now + ai_dma_period;
         os_raise();
@@ -1001,6 +1021,11 @@ uint8_t aram_read(uint32_t addr) {
 
 void hw_init() {
     sram_init();
+    orig_AIDHandler = ppc_hook("__AIDHandler", [](PPCContext& c) {
+        bool outer = !ai_in_handler.exchange(true);
+        orig_AIDHandler(c);
+        if (outer) ai_in_handler.store(false);
+    });
     if (g_gamecube) aram.assign(0x01000000, 0);
     vi_frame_tb = os_tb_now();
 }

@@ -626,6 +626,8 @@ void feed(const uint8_t* b, int n) {
 
 }  // namespace
 
+static void submit_record(bool may_keep);
+
 void gx_trace_next_frame() { trace_next = true; }
 
 // The EFB as the CPU reads it: 0xC8000000 | y << 12 | x << 2, bit 22 for Z
@@ -641,7 +643,7 @@ uint32_t gx_efb_peek(uint32_t a) {
     if (at != rec_total) {
         ++st.readbacks;
         hw_run_locked([] { if (!rec.empty()) submit_pending = true; });
-        gx_submit_pending();
+        submit_record(false);
         if (!video_efb_read(argb, z)) return 0;
         at = rec_total;
     }
@@ -706,7 +708,7 @@ bool gx_copy_to_ram(uint32_t addr) {
         if (!rec.empty()) submit_pending = true;
     });
     if (!known || rec_copy.fmt > 6) return false;
-    gx_submit_pending();
+    submit_record(false);
     std::vector<uint8_t> rgba;
     if (!video_copy_read(addr, rec_copy.w, rec_copy.h, rgba)) return false;
     std::vector<uint8_t> out(rec_copy.size);
@@ -733,15 +735,26 @@ void gx_draw_done_reached() {
     hw_run_locked([] { pe_ctrl |= 8; ++st.done; os_raise(); });
 }
 
-void gx_submit_pending() {
+// With interrupts off the hand-over does not wait: none could be taken
+// meanwhile. The Last Story moves its FIFO breakpoint in a VI callback, and
+// the frame held behind it ends there; a wait for the renderer in that
+// handler left the AI unmixed for up to a frame. The record is kept and
+// handed over at the next point where interrupts are on (ppc_poll, told by
+// os_raise). A read-back (an EFB peek, a copy into RAM) needs its record
+// handed over first, whatever the interrupts: it waits (may_keep false).
+static void submit_record(bool may_keep) {
     if (!submit_pending) return;
     submit_pending = false;
+    bool can_wait = !may_keep || !t_ppc || (t_ppc->msr & 0x8000u);
     while (!rec.empty()) {
         int frames = rec_frames;
-        if (video_submit(rec, frames, 1)) { rec_frames = 0; draw_end = SIZE_MAX; break; }
+        if (video_submit(rec, frames, can_wait ? 1 : 0)) { rec_frames = 0; draw_end = SIZE_MAX; break; }
+        if (!can_wait) { submit_pending = true; os_raise(); break; }
         if (t_ppc && g_ppc_pending.load(std::memory_order_relaxed)) ppc_poll(*t_ppc);
     }
 }
+
+void gx_submit_pending() { submit_record(true); }
 
 // The write-gather pipe: CPU stores to 0xCC008000 collect in a 32-byte
 // buffer, and reach the FIFO in memory as 32-byte bursts, as on the console

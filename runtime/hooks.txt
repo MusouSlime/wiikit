@@ -18,6 +18,9 @@ OSRestart
 OSShutdownSystem
 __OSReboot
 
+# the AI's interrupt: no audio block starts while the game is in it (hw.cpp)
+__AIDHandler
+
 # the MMU: nothing to configure on a flat address space
 RealMode               # rfi into a real-mode routine that sets the BATs
 

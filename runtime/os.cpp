@@ -446,6 +446,7 @@ void ppc_idle(PPCContext& c) {
 }
 
 void ppc_poll(PPCContext& c) {
+    if (c.msr & MSR_EE) gx_submit_pending();      // a record kept while interrupts were off
     while (c.msr & MSR_EE) {
         g_ppc_pending.store(0);
         int exc = hw_external_pending() ? EXC_EXTERNAL : dec_due() ? EXC_DECREMENTER : -1;
@@ -469,6 +470,20 @@ void os_install() {
     g_t0 = Clock::now();
 #ifdef _WIN32
     timeBeginPeriod(1);
+    // Out of the foreground Windows 11 may throttle the process (EcoQoS) and
+    // ignore its 1 ms timer resolution: the waits that take interrupts every
+    // millisecond (the renderer's queue, the idle loop) then take them every
+    // 15.6 ms, and the AI goes unmixed: the sound grates (The Last Story's
+    // window behind another). Neither, whatever the window.
+    // (SetProcessInformation from kernel32 by name: Windows 8 and later)
+    using SetProcInfo = BOOL(WINAPI*)(HANDLE, PROCESS_INFORMATION_CLASS, LPVOID, DWORD);
+    if (auto set = (SetProcInfo)(void*)GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "SetProcessInformation")) {
+        PROCESS_POWER_THROTTLING_STATE pt = {};
+        pt.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+        pt.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED | PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION;
+        pt.StateMask = 0;
+        set(GetCurrentProcess(), ProcessPowerThrottling, &pt, sizeof pt);
+    }
     AddVectoredExceptionHandler(1, on_crash);
 #endif
     ppc_hook("OSLoadContext", hle_OSLoadContext);
@@ -484,7 +499,8 @@ void os_install() {
     std::thread(clock_main).detach();
 }
 
-// Where the running guest thread is: its registers' summary and call chain.
+// Where the running guest thread is (its registers' summary and call chain),
+// and where the parked ones wait.
 void os_report_running(int depth) {
     std::lock_guard<std::mutex> lk(g_mx);
     HostThread* h = g_running;
@@ -493,6 +509,11 @@ void os_report_running(int depth) {
     std::fprintf(stderr, "  thread %08X, msr %08X, pending %u, %zu interrupt(s) deep\n",
                  h->ctx, c.msr, g_ppc_pending.load(), h->delivering.size());
     rt_backtrace(c, stderr, depth);
+    for (auto& [ctx, t] : g_by_ctx) {                // the parked threads, where they wait
+        if (t == h || t->zombie) continue;
+        std::fprintf(stderr, "  thread %08X, %zu interrupt(s) deep:\n", ctx, t->delivering.size());
+        rt_backtrace(*t->cur, stderr, depth);
+    }
 }
 
 // --watch: every few seconds, where the running guest thread is
