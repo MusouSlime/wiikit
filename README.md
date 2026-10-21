@@ -28,6 +28,7 @@ the ports.
 | [pc-thelaststory](https://github.com/vs-sr-dev/pc-thelaststory) | The Last Story (2011, PAL) | FIFO breakpoints that stop the GP (its engine paces its frames on them) and the CP's overflow behind them, the PI's FIFO in 32-byte units, EFB copies written into RAM where the game reads them on the CPU (its dyed equipment, compressed to CMPR), `WPADGetInfo` |
 | [pc-finalfantasycrystalbearers](https://github.com/vs-sr-dev/pc-finalfantasycrystalbearers) | Final Fantasy Crystal Chronicles: The Crystal Bearers (2009) | the Nunchuk (its stick and C and Z on keys), a third `KPADStatus` size (0xB0), shader programs shared by their code and kept on disk (a game of hundreds of TEV set-ups, its cut-scenes no longer stalled by links seen before) |
 | [pc-castlevaniajudgment](https://github.com/vs-sr-dev/pc-castlevaniajudgment) | Castlevania Judgment (2008) | fog (the stages' distance; the other ports' fogs drawn with it), the NAND's "invalid" for a directory read on a file (the SDK's `NANDGetType`: a save found at the next boot); it ran otherwise on wiikit as it was, named from a kin with the same SDK builds |
+| [pc-ffcceotwii](https://github.com/vs-sr-dev/pc-ffcceotwii) | Final Fantasy Crystal Chronicles: Echoes of Time (2009, PAL) | the NAND's `/tmp` emptied at boot, as IOS does (the game copies 41 MB of its disc there and reads from the copies); it ran otherwise on wiikit as it was, named from six kin by hash, by place and by order (a 2008 SDK no other port has). The DS game on the Wii: its RVL SDK's MP and MPDS libraries talked to the DS edition over `/dev/net/wd` |
 
 Each port says where it stands in a `.recomp.json` at its root
 ([spec](https://recomp.fyi/spec)): the game, its system,
@@ -133,7 +134,7 @@ written up, with Victorious as the case, in pc-victorious's
 | `runtime` (Nunchuk) | a stripped 2009 game that stops at its title without one: past it, its stick walking from the keys |
 | `runtime` (shader cache) | the same game's title and opening: 1 160 links for 396 programs in its first minute before, one per program after; a second run 337 of 354 programs from the disk, its stalls on the sound driver's clock from about 5 a second to under 1 |
 | `runtime` (fog) | Castlevania Judgment's stages, linear and exponential fog, by eye: two scripted runs to the same fight, fog on and off, the distance into the fog's colour, the fighters and the HUD unchanged. The other ports' fogs (linear, exponential; a 2004 GameCube game's included) drawn, nothing else changed |
-| `runtime` (NAND) | the same game, which tells its save file from a directory by reading it as one (`NANDGetType`): found at the next boot. A stripped 2009 PAL game that copies 41 MB of its disc to `/tmp` at boot and reads from the copies: ten boots in a row, each at 30 frames a second for 20 s (it stopped three frames into the second boot when the last run's copies were still there) |
+| `runtime` (NAND) | the same game, which tells its save file from a directory by reading it as one (`NANDGetType`): found at the next boot. Echoes of Time, which copies 41 MB of its disc to `/tmp` at boot and reads from the copies: ten boots in a row, each at 30 frames a second for 20 s (it stopped three frames into the second boot when the last run's copies were still there) |
 
 ## Known gaps
 
