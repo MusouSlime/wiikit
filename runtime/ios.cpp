@@ -547,6 +547,11 @@ void ios_init(const char* extract_dir, const char* nand_root) {
     g_nand = nand_root;
     char data[64];
     std::snprintf(data, sizeof data, "/title/%08x/%08x/data", (uint32_t)(g_title >> 32), (uint32_t)g_title);
+    // /tmp is empty at every title's start: IOS clears it when it launches
+    // one. Games keep copies of disc files there for one run, and a copy
+    // left by the last run is not one they expect to find.
+    std::error_code ec;
+    if (!g_nand.empty()) fs::remove_all(g_nand + "/tmp", ec);
     for (const char* d : {"/shared2/sys", "/tmp", "/sys"}) fs::create_directories(g_nand + d);
     fs::create_directories(g_nand + data);
 }
