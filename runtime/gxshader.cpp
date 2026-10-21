@@ -177,6 +177,9 @@ layout(std140, binding = 1) uniform PS {
     vec4 u_texdim[8];     // xy: 1 / (map size * 128); zw: texcoord scale * 128
     ivec4 u_indscale[4];  // indirect stage: coordinate shift s, t
     ivec4 u_indmtx[6];    // indirect matrices, two rows each: (a, b, c, shift)
+    ivec4 u_fogi;         // fog: B's magnitude, B's shift, colour (0xRRGGBB), EFB scale
+    vec4 u_fogf;          // fog: A, C, the range's centre and half width (EFB pixels)
+    vec4 u_fogk[3];       // fog range: the ten k coefficients (and the tenth again)
 };
 layout(binding = 0) uniform sampler2D s0;
 layout(binding = 1) uniform sampler2D s1;
@@ -272,6 +275,39 @@ const char* acmp(uint32_t c) {
     return t[c & 7];
 }
 
+// Fog, after the alpha test, on the colour only (after Dolphin's software
+// renderer). The depth is the EFB's 24-bit Z; ze is A / (B_mag - (Z >> B_shift))
+// in perspective, A * Z in orthographic, times the range adjustment (the
+// distance from the screen's centre) if enabled; fog = clamp(ze - C, 0, 1),
+// through the exponential curves; the colour moves toward the fog colour by
+// fog in 1/256ths.
+void fog(std::string& s, const uint32_t* bp) {
+    uint32_t fsel = bp[0xF1] >> 21 & 7, ortho = bp[0xF1] >> 20 & 1, range = bp[0xE8] >> 10 & 1;
+    if (!fsel) return;
+    s += "    {\n"
+         "        uint zc = uint(clamp(gl_FragCoord.z, 0.0, 1.0) * 16777215.0);\n";
+    if (ortho) s += "        float ze = u_fogf.x * float(zc) / 16777215.0;\n";
+    else s += "        float ze = u_fogf.x * 16777215.0 / float(u_fogi.x - int(zc >> uint(u_fogi.y)));\n";
+    if (range)
+        s += "        float off = (gl_FragCoord.x / float(u_fogi.w) - u_fogf.z) / u_fogf.w;\n"
+             "        float fi = clamp(9.0 - abs(off) * 9.0, 0.0, 9.0);\n"
+             "        int lo = int(fi), hi = lo + 1;\n"
+             "        float k = mix(u_fogk[hi >> 2][hi & 3], u_fogk[lo >> 2][lo & 3], float(hi) - fi);\n"
+             "        ze *= sqrt(off * off + k * k) / k;\n";
+    s += "        float f = clamp(ze - u_fogf.y, 0.0, 1.0);\n";
+    switch (fsel) {
+    case 4: s += "        f = 1.0 - exp2(-8.0 * f);\n"; break;
+    case 5: s += "        f = 1.0 - exp2(-8.0 * f * f);\n"; break;
+    case 6: s += "        f = exp2(-8.0 * (1.0 - f));\n"; break;
+    case 7: s += "        f = exp2(-8.0 * (1.0 - f) * (1.0 - f));\n"; break;
+    default: break;                                   // 2: linear (1 and 3 as linear)
+    }
+    s += "        int fo = int(f * 256.0);\n"
+         "        ivec3 fc = ivec3(u_fogi.z >> 16, u_fogi.z >> 8, u_fogi.z) & 255;\n"
+         "        fin.rgb = (fin.rgb * (256 - fo) + fc * fo) >> 8;\n"
+         "    }\n";
+}
+
 std::string fragment_shader(const uint32_t* bp) {
     std::string s = FS_HEAD;
     uint32_t gen = bp[0x00], ntev = (gen >> 10 & 15) + 1, nind = gen >> 16 & 7, ntg = gen & 15;
@@ -359,6 +395,7 @@ std::string fragment_shader(const uint32_t* bp) {
         static const char* lg[4] = {"&&", "||", "!=", "=="};
         w(s, "    if (!((%s) %s (%s))) discard;\n", t0, lg[logic], t1);
     }
+    fog(s, bp);
     s += "    o_blend = vec4(fin) / 255.0;\n    o_col = o_blend;\n";
     if (bp[0x42] >> 8 & 1) s += "    o_col.a = float(u_alpha.z) / 255.0;\n";
     s += "}\n";
@@ -383,6 +420,7 @@ std::string gx_shader_key(const uint32_t* bp, const uint32_t* xf, uint8_t vflags
     add(bp[0xF3] >> 16);
     add(bp[0x27]);
     add(bp[0x42] >> 8 & 1);
+    add(bp[0xF1] >> 21 & 7 ? (bp[0xF1] >> 20 & 15) | (bp[0xE8] >> 10 & 1) << 4 : 0);   // fog
     return k;
 }
 

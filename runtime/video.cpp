@@ -74,6 +74,8 @@ struct PSUniforms {                                // gxshader.cpp's uniform blo
     int32_t reg[4][4], konst[4][4], alpha[4];
     float texdim[8][4];
     int32_t indscale[4][4], indmtx[6][4];
+    int32_t fogi[4];
+    float fogf[4], fogk[3][4];
 };
 
 // ---- GL objects -------------------------------------------------------------------------------
@@ -450,6 +452,24 @@ void set_ps_uniforms() {
         int32_t r1[4] = {s11(c0 >> 11), s11(c1 >> 11), s11(c2 >> 11), 17 - scale};
         std::memcpy(u.indmtx[2 * m], r0, sizeof r0);
         std::memcpy(u.indmtx[2 * m + 1], r1, sizeof r1);
+    }
+    if (bp[0xF1] >> 21 & 7) {                                  // fog (gxshader.cpp)
+        // A and C: a sign, an 8-bit exponent and an 11-bit mantissa, a float's
+        // top 20 bits
+        uint32_t a = (bp[0xEE] & 0xFFFFF) << 12, c = (bp[0xF1] & 0xFFFFF) << 12;
+        std::memcpy(&u.fogf[0], &a, 4);
+        std::memcpy(&u.fogf[1], &c, 4);
+        // the range's centre is in the viewport's coordinates, the scissor offset in
+        u.fogf[2] = (float)((int)(bp[0xE8] & 0x3FF) - s10(bp[0x59]) * 2);
+        u.fogf[3] = std::fabs(fx(0x101A));
+        u.fogi[0] = (int32_t)(bp[0xEF] & 0xFFFFFF);
+        u.fogi[1] = (int32_t)(bp[0xF0] & 31);
+        u.fogi[2] = (int32_t)(bp[0xF2] & 0xFFFFFF);
+        u.fogi[3] = S;
+        for (int i = 0; i < 12; ++i) {
+            int j = i < 10 ? i : 9;
+            u.fogk[i / 4][i % 4] = (float)(bp[0xE9 + j / 2] >> (12 * (j & 1)) & 0xFFF) / 256.0f;
+        }
     }
     if (dump_ps) {
         dump_ps = false;

@@ -43,7 +43,7 @@ namespace {
 
 constexpr uint32_t IRQ_IPC = 0x40000000;             // Hollywood PPC IRQ: IPC from Starlet
 constexpr int32_t PENDING = INT32_MIN;
-constexpr int32_t IPC_EINVAL = -4, IPC_ENOENT = -6, FS_EEXIST = -105, FS_ENOENT = -106,
+constexpr int32_t IPC_EINVAL = -4, IPC_ENOENT = -6, FS_EINVAL = -101, FS_EEXIST = -105, FS_ENOENT = -106,
                   ES_EINVAL = -1017;
 
 // ---- the registers ----------------------------------------------------------------------------
@@ -181,7 +181,7 @@ struct NandFile : Device {
         return n;
     }
     int32_t seek(int32_t off, uint32_t whence) override {
-        if (std::fseek(f, off, whence == 0 ? SEEK_SET : whence == 1 ? SEEK_CUR : SEEK_END)) return -101;
+        if (std::fseek(f, off, whence == 0 ? SEEK_SET : whence == 1 ? SEEK_CUR : SEEK_END)) return FS_EINVAL;
         return (int32_t)std::ftell(f);
     }
     int32_t ioctl(uint32_t req, uint32_t in, uint32_t in_len, uint32_t out, uint32_t out_len, uint32_t a) override {
@@ -239,7 +239,7 @@ struct FS : Device {
             std::error_code ec;
             fs::remove_all(to, ec);
             fs::rename(from, to, ec);
-            return ec ? -101 : 0;
+            return ec ? FS_EINVAL : 0;
         }
         case 0x0D: return 0;                          // Shutdown
         }
@@ -248,6 +248,9 @@ struct FS : Device {
     int32_t ioctlv(uint32_t req, std::vector<Vec>& in, std::vector<Vec>& io, uint32_t a) override {
         if (req == 0x04 && !in.empty()) {             // ReadDir: count, or names
             std::string p = host_path(guest_cstr(in[0].addr, 64));
+            // on a file, "invalid": the SDK's NANDGetType reads a directory
+            // so, to tell a file from a directory from nothing
+            if (fs::is_regular_file(p)) return FS_EINVAL;
             if (!fs::is_directory(p)) return FS_ENOENT;
             std::vector<std::string> names;
             for (auto& e : fs::directory_iterator(p)) names.push_back(e.path().filename().string());

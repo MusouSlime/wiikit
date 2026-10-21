@@ -563,7 +563,6 @@ size_t parse(const uint8_t* p, size_t n, bool in_dl) {
         st.verts += count;
         TRACE("DRAW %02X fmt %d n %u%s\n", op & 0xF8, op & 7, count, in_dl ? " (dl)" : "");
         if (video && count) {
-            if (bp[0xF1] >> 21 & 7) warn_once("fog (not drawn), type", bp[0xF1] >> 21 & 7);
             if (bp[0xF4] >> 2 & 3) warn_once("Z texture (not drawn), op", bp[0xF4] >> 2 & 3);
             if (g_vperf_on) {
                 auto t0 = std::chrono::steady_clock::now();
