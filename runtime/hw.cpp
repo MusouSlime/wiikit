@@ -139,22 +139,25 @@ enum : uint16_t {
 };
 // The micro-codes, in high-level emulation:
 //   ROM   after reset: announces itself (0x8071FEED), then takes a boot task
-//         from the SDK's __DSP_boot_task, ten mails (0x80F3A001, IRAM
-//         address, ..., 0x80F3D001, entry point), and starts it: always AX
-//         so far
+//         from the SDK's __DSP_boot_task, ten mails (0x80F3A001, the u-code's
+//         address, ..., 0x80F3D001, the entry point), and starts it: the AX
+//         (the sound mixer), or the card's own u-code, which unlocks the card
 //   INIT  the 128-byte code __OSInitAudioSystem runs once: one mail, done
 //   AX    the audio mixer. Init mail 0xDCD10000; then each audio frame the
 //         SDK sends 0xBABE0000 | size and a command list address, and AX
 //         yields (0xDCD10002) when done, which lets the SDK's task manager
 //         call the resume callback that prepares the next frame. ax.cpp
 //         mixes each list, the Wii's or the GameCube's.
+//   CARD  the card's u-code: the SDK loads it into the DSP to unlock the
+//         card. It announces itself (0xDCD10000), the CPU starts it with
+//         0xFF000000, and it answers 0xDCD10003 when the card is unlocked.
 // Mails the DSP sends to the task manager come with a DSP interrupt.
-enum class Ucode { ROM, INIT, AX };
+enum class Ucode { ROM, INIT, AX, CARD };
 uint16_t dsp_cr = DSP_HALT;
 Ucode dsp_ucode = Ucode::ROM;
 std::deque<uint32_t> dsp_to_cpu;                     // mails from the DSP
 uint32_t dsp_from_cpu = 0;                           // the CPU's mailbox (bit 31: not yet taken)
-int dsp_boot_mails = 0;
+
 bool dsp_cmdlist_next = false;
 uint64_t dsp_frames = 0;
 // When the AI interrupt was last raised and acknowledged (ai_tick paces a
@@ -165,6 +168,37 @@ uint16_t dsp_ar[8];                                  // 0x20-0x2A: ARAM DMA
 std::vector<uint8_t> aram;                           // the GameCube's ARAM (hw_init)
 bool ar_busy = false;                                // an ARAM DMA runs until ar_done
 std::chrono::steady_clock::time_point ar_done;
+
+// The boot task: the SDK's __DSP_boot_task sends ten mails, in five pairs: a
+// tag and the value it asks for. The tags are:
+//
+//   0x80F3A001  the u-code's address in main memory
+//   0x80F3A002  its length, in bytes
+//   0x80F3B002  the length of its data memory
+//   0x80F3C002  the address of its instruction memory
+//   0x80F3D001  its entry point
+//
+// The DSP's boot task copies the u-code into its own memory and starts it.
+// Which u-code it is says what the runtime does with it.
+uint32_t dsp_boot_tag = 0;                           // the tag of the pair being read
+uint32_t dsp_boot_addr = 0, dsp_boot_len = 0;
+int dsp_boot_values = 0;                             // the values read so far
+
+// The card's u-code: the one the SDK loads into the DSP to unlock the card
+// (Dolphin's CARD u-code).
+constexpr uint32_t UCODE_CARD = 0x65d6cc6f;
+
+// The u-code's hash: the one the DSP's own hardware computes over the u-code
+// in its memory, and the one Dolphin's AX HLE is keyed by. The u-code is
+// hashed where it lies in main memory, before it is copied.
+uint32_t ucode_crc(uint32_t phys, uint32_t len) {
+    uint32_t crc = 0;
+    for (uint32_t i = 0; i < len; ++i) {
+        crc ^= ld8(virt(phys + i));
+        crc = (crc << 3) | (crc >> 29);
+    }
+    return crc;
+}
 bool dsp_irq() {
     return ((dsp_cr & DSP_AIDINT) && (dsp_cr & DSP_AIDINTMSK)) ||
            ((dsp_cr & DSP_ARINT) && (dsp_cr & DSP_ARINTMSK)) ||
@@ -178,19 +212,42 @@ void dsp_send(uint32_t mail, bool irq) {
 }
 void dsp_start() {                                   // HALT went 1 -> 0: the micro-code runs
     switch (dsp_ucode) {
-    case Ucode::ROM: dsp_send(0x8071FEED, false); dsp_boot_mails = 0; break;
+    case Ucode::ROM: dsp_send(0x8071FEED, false); dsp_boot_tag = 0; dsp_boot_values = 0; break;
     case Ucode::INIT: dsp_send(0x80544348, false); break;
     case Ucode::AX: break;
+    case Ucode::CARD: break;
     }
 }
 void dsp_receive(uint32_t m) {                       // a mail from the CPU, taken at once
     if (dsp_dbg) rt_log("dsp: <- cpu %08X (micro-code %d)", m, (int)dsp_ucode);
     switch (dsp_ucode) {
     case Ucode::ROM:
-        if (++dsp_boot_mails == 10) {                // the boot task is complete: AX starts
-            dsp_ucode = Ucode::AX;
-            dsp_cmdlist_next = false;
-            dsp_send(0xDCD10000, true);
+        if (dsp_boot_tag) {
+            switch (dsp_boot_tag) {
+            case 0x80F3A001: dsp_boot_addr = m; break;
+            case 0x80F3A002: dsp_boot_len = m & 0xFFFF; break;
+            case 0x80F3B002: break;                  // the data memory's length
+            case 0x80F3C002: break;                  // the instruction memory's address
+            case 0x80F3D001: break;                  // the entry point
+            }
+            dsp_boot_tag = 0;
+            if (++dsp_boot_values == 5) {
+                // the boot task is complete: the u-code is started
+                uint32_t crc = ucode_crc(dsp_boot_addr, dsp_boot_len);
+                if (crc == UCODE_CARD) {
+                    dsp_ucode = Ucode::CARD;
+                    rt_log("dsp: the card's u-code (crc %08X)", crc);
+                } else {
+                    dsp_ucode = Ucode::AX;
+                    rt_log("dsp: the AX u-code (crc %08X)", crc);
+                }
+                dsp_cmdlist_next = false;
+                dsp_send(0xDCD10000, true);          // the u-code announces itself
+            }
+        } else if ((m & 0xFFFF0000) == 0x80F30000) {
+            dsp_boot_tag = m;                        // the tag of the pair
+        } else {
+            rt_log("dsp: the boot task got %08X", m);
         }
         break;
     case Ucode::AX:
@@ -204,6 +261,20 @@ void dsp_receive(uint32_t m) {                       // a mail from the CPU, tak
             dsp_cmdlist_next = true;
         } else if (m != 0xCDD10003) {                // 0xCDD10003: carry on
             rt_log("dsp: AX mail %08X", m);
+        }
+        break;
+    case Ucode::CARD:
+        // The CPU's start command: the card is unlocked. The card is
+        // unlocked from the start here (as it is in Dolphin), so the
+        // micro-code's own work is not needed.
+        if (m == 0xFF000000) {
+            dsp_send(0xDCD10003, true);              // the card is unlocked
+            dsp_ucode = Ucode::ROM;                  // and the ROM's u-code runs again
+            dsp_boot_tag = 0;
+            dsp_boot_values = 0;
+            dsp_send(0x8071FEED, false);             // which announces itself
+        } else {
+            rt_log("dsp: the card's u-code got %08X", m);
         }
         break;
     case Ucode::INIT:
@@ -221,6 +292,8 @@ void dsp_cr_write(uint16_t v) {
     if (v & DSP_RES) {
         dsp_ucode = Ucode::ROM;
         dsp_to_cpu.clear();
+        dsp_boot_tag = 0;
+        dsp_boot_values = 0;
     }
     if (!(v & DSP_INIT)) {                           // boot the 128 bytes at ARAM 0 (the init code)
         dsp_ucode = Ucode::INIT;
@@ -431,12 +504,20 @@ uint8_t ipl_byte(uint8_t in) {
 
 uint8_t exi_byte(int ch, int dev, uint8_t in) {
     if (ch == 0 && dev == 1) return ipl_byte(in);
+    if (dev == 0 && (ch == 0 || ch == 1)) return memcard_byte(ch, in);   // slot A, slot B
     return 0xFF;                                     // nothing attached
 }
 
+// The chip that was selected is released when the channel's chip select
+// changes: the card does then the work that waited for it (the page it
+// was given, the sector it was told to erase).
 void exi_select(int ch, uint32_t new_csr) {
     uint32_t old_cs = exi[ch].csr >> 7 & 7, cs = new_csr >> 7 & 7;
     if (ch == 0 && (old_cs & 2) && !(cs & 2)) { ipl_cursor = 0; ipl_cmd = 0; }
+    int old_dev = old_cs & 1 ? 0 : old_cs & 2 ? 1 : old_cs & 4 ? 2 : -1;
+    int new_dev = cs & 1 ? 0 : cs & 2 ? 1 : cs & 4 ? 2 : -1;
+    if (old_dev != new_dev && old_dev == 0 && (ch == 0 || ch == 1)) memcard_deselect(ch);
+    if (old_dev != new_dev && new_dev == 0 && (ch == 0 || ch == 1)) memcard_select(ch);
 }
 
 void exi_transfer(int ch) {
@@ -444,10 +525,16 @@ void exi_transfer(int ch) {
     int cs = e.csr >> 7 & 7, dev = cs & 1 ? 0 : cs & 2 ? 1 : cs & 4 ? 2 : -1;
     int rw = e.cr >> 2 & 3;
     if (e.cr & 2) {                                  // DMA
-        for (uint32_t i = 0; i < e.len; ++i) {
-            uint32_t a = virt(e.mar + i);
-            if (rw == 1) exi_byte(ch, dev, ld8(a));
-            else st8(a, exi_byte(ch, dev, 0));
+        if (dev == 0 && (ch == 0 || ch == 1)) {
+            // the card: the data moves in one go, from or to its blocks
+            if (rw == 1) memcard_dma_write(ch, virt(e.mar), e.len);
+            else memcard_dma_read(ch, virt(e.mar), e.len);
+        } else {
+            for (uint32_t i = 0; i < e.len; ++i) {
+                uint32_t a = virt(e.mar + i);
+                if (rw == 1) exi_byte(ch, dev, ld8(a));
+                else st8(a, exi_byte(ch, dev, 0));
+            }
         }
     } else {                                         // immediate, 1-4 bytes, MSB first
         int n = (e.cr >> 4 & 3) + 1;
@@ -473,7 +560,14 @@ uint32_t exi_read(uint32_t off) {
     if (ch > 2) return store_read(0xCD006800 + off, 4);
     Exi& e = exi[ch];
     switch (off % 0x14) {
-    case 0x00: return e.csr;
+    case 0x00: {
+        uint32_t csr = e.csr;
+        // the external device's presence: the card, in the slots
+        if (ch < 2 && memcard_present(ch)) csr |= 0x1000;
+        // the card's own interrupt
+        if (ch < 2 && memcard_interrupt(ch)) csr |= 2;
+        return csr;
+    }
     case 0x04: return e.mar;
     case 0x08: return e.len;
     case 0x0C: return e.cr;

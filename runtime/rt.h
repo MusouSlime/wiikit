@@ -87,6 +87,20 @@ std::chrono::nanoseconds hw_vi_field_period();     // from the timing VI is prog
 std::chrono::steady_clock::time_point hw_tick();   // timed device events; returns the next one
 extern bool g_mmio_log;                            // log every first access to a register
 
+// ---- the memory card (memcard.cpp) ------------------------------------------------------
+// The GameCube's memory card: its storage and the EXI device that talks to it.
+// The card in the slot: 0 is A (the EXI's channel 0, device 0), 1 is B (channel
+// 1, device 0). The boot ROM's own chip (the RTC and the SRAM) is channel 0,
+// device 1, and hw.cpp serves it.
+bool memcard_init(const char* dir);                // load the cards in DIR, or make them
+bool memcard_present(int slot);
+uint8_t memcard_byte(int slot, uint8_t in);        // one byte through the card
+void memcard_dma_read(int slot, uint32_t addr, uint32_t size);     // the EXI's DMA, in guest memory
+void memcard_dma_write(int slot, uint32_t addr, uint32_t size);
+void memcard_deselect(int slot);                   // the chip was released
+void memcard_select(int slot);                     // the chip was selected: a new command
+bool memcard_interrupt(int slot);                  // the card wants the CPU's attention
+
 // ---- the Wii Remote (wpad.cpp) -------------------------------------------------------
 void wpad_install();                               // WPAD/KPAD hooks
 // KPADStatus's size in the game's SDK (KPADRead fills whole samples): 0xF0

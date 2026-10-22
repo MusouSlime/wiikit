@@ -1,6 +1,7 @@
 // wiiboot — run a recompiled Wii or GameCube disc game.
 //
-//     wiiboot EXTRACT_DIR [--nand DIR] [--fonts DIR] [--symbols symbols.tsv] [--mmio-log] [--watch SECONDS]
+//     wiiboot EXTRACT_DIR [--nand DIR] [--fonts DIR] [--memcard DIR] [--symbols symbols.tsv]
+//                         [--mmio-log] [--watch SECONDS]
 //                         [--no-video] [--no-audio] [--scale N] [--frames-ahead N] [--dump DIR]
 //                         [--dump-every N] [--quit-after SECONDS] [--aspect 16:9|4:3]
 //                         [--language en|fr|es|de|it|nl|ja] [--fullscreen] [--window WxH] [--keys FILE]
@@ -20,7 +21,9 @@
 // Dolphin's Sys/GC has free ones.
 //
 // A GameCube game has no NAND, SYSCONF, IOS or Remote: --aspect,
-// --language and --input do not apply to it.
+// --language and --input do not apply to it. Its memory cards are in
+// EXTRACT_DIR/../memcard (A.raw and B.raw, Dolphin's raw format; a card
+// that is not there is made), or where --memcard says.
 //
 // The game runs on its own threads; the main thread runs the window and the
 // renderer (video.cpp), or with --no-video only waits.
@@ -52,9 +55,11 @@ int main(int argc, char** argv) {
     VideoOptions vo;
     SysconfOptions so;
     std::string root = argv[1], nand = root + "/../nand", fonts = root + "/../fonts";
+    std::string memcard = root + "/../memcard";
     for (int i = 2; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--nand") && i + 1 < argc) nand = argv[++i];
         else if (!std::strcmp(argv[i], "--fonts") && i + 1 < argc) fonts = argv[++i];
+        else if (!std::strcmp(argv[i], "--memcard") && i + 1 < argc) memcard = argv[++i];
         else if (!std::strcmp(argv[i], "--symbols") && i + 1 < argc) rt_load_symbols(argv[++i]);
         else if (!std::strcmp(argv[i], "--mmio-log")) g_mmio_log = true;
         else if (!std::strcmp(argv[i], "--watch") && i + 1 < argc) watch = std::atoi(argv[++i]);
@@ -106,6 +111,7 @@ int main(int argc, char** argv) {
     hw_init();
     if (!hw_load_fonts(fonts.c_str())) rt_log("wiiboot: no boot ROM fonts in %s", fonts.c_str());
     if (!ax_load_coefs(fonts.c_str())) rt_log("wiiboot: no dsp_coef.bin in %s: linear resampling", fonts.c_str());
+    if (gamecube) memcard_init(memcard.c_str());
     audio_init(audio);
     if (!gamecube) ios_init(root.c_str(), nand.c_str());
     os_install();

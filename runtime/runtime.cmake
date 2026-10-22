@@ -11,7 +11,7 @@ add_library(wiikit_core OBJECT ${_rt}/core.cpp ${_rt}/mem.cpp ${_rt}/rso.cpp)
 add_library(wiikit_stub OBJECT ${_rt}/services_stub.cpp)
 add_library(wiikit_hw OBJECT ${_rt}/os.cpp ${_rt}/hw.cpp ${_rt}/gx.cpp ${_rt}/ios.cpp ${_rt}/sysconf.cpp
             ${_rt}/disc.cpp ${_rt}/boot.cpp ${_rt}/wpad.cpp ${_rt}/ax.cpp ${_rt}/audio.cpp
-            ${_rt}/video.cpp ${_rt}/gxshader.cpp ${_rt}/gxtex.cpp)
+            ${_rt}/video.cpp ${_rt}/gxshader.cpp ${_rt}/gxtex.cpp ${_rt}/memcard.cpp)
 find_package(SDL3 REQUIRED CONFIG)
 target_link_libraries(wiikit_hw PUBLIC SDL3::SDL3)
 foreach(t wiikit_core wiikit_stub wiikit_hw)
