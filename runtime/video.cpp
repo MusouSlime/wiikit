@@ -317,13 +317,19 @@ void efb_clear(int x, int y, int w, int h) {
 // before each EFB copy, and every WIIKIT_EFBDUMP_EVERY draws (debugging)
 long efb_dump_frame = std::getenv("WIIKIT_EFBDUMP") ? std::atol(std::getenv("WIIKIT_EFBDUMP")) : -1;
 long efb_dump_every = std::getenv("WIIKIT_EFBDUMP_EVERY") ? std::atol(std::getenv("WIIKIT_EFBDUMP_EVERY")) : 0;
-bool efb_dumping() { return (long)cnt.frames == efb_dump_frame; }
+// WIIKIT_EFBDUMP_STRIDE=N: from EFBDUMP on, one frame's picture every N frames
+long efb_dump_stride = std::getenv("WIIKIT_EFBDUMP_STRIDE") ? std::atol(std::getenv("WIIKIT_EFBDUMP_STRIDE")) : 0;
+bool efb_dumping() {
+    if ((long)cnt.frames < efb_dump_frame) return false;
+    if (efb_dump_stride) return ((long)cnt.frames - efb_dump_frame) % efb_dump_stride == 0;
+    return (long)cnt.frames == efb_dump_frame;
+}
 void efb_dump(const char* tag) {
     static int k = 0;
     std::vector<uint8_t> px((size_t)EFB_W * S * EFB_H * S * 4);   // top row first, as the EFB is kept
     glGetTextureImage(efb_col, 0, GL_RGBA, GL_UNSIGNED_BYTE, (GLsizei)px.size(), px.data());
     char name[160];
-    std::snprintf(name, sizeof name, "efb_%ld_%04d_%s.png", efb_dump_frame, k++, tag);
+    std::snprintf(name, sizeof name, "efb_%ld_%04d_%s.png", (long)cnt.frames, k++, tag);
     write_png(name, EFB_W * S, EFB_H * S, px.data());
 }
 
@@ -531,6 +537,7 @@ void draw(uint8_t prim, uint8_t vflags, const uint8_t* pieces, uint32_t npieces)
         n += k;
     }
     uint32_t cull = bp[0x00] >> 14 & 3;
+    if (std::getenv("WIIKIT_NOCULL")) cull = 0;
     bool tri = prim < 0xA8;
     if (tri && cull == 3) return;
     GLuint prog = program_for(vflags);
@@ -599,6 +606,19 @@ void draw(uint8_t prim, uint8_t vflags, const uint8_t* pieces, uint32_t npieces)
     set_ps_uniforms();
     bind_textures();
 
+    if (efb_dumping() && std::getenv("WIIKIT_VTXLOG")) {          // debugging: every vertex of each draw
+        static FILE* vf = std::fopen("vtxlog.txt", "w");
+        static long kl = 0;
+        if (kl++ < 80) {
+            std::fprintf(vf, "draw %ld prim %02X n %u", (long)cnt.draws, prim, n);
+            for (uint32_t vi = 0; vi < n && vi < 8; ++vi) {
+                const GVtx& v = reinterpret_cast<const GVtx*>(vtx)[vi];
+                std::fprintf(vf, " [%u] %g %g %g tc %g %g", vi, v.pos[0], v.pos[1], v.pos[2],
+                             v.tc[0][0], v.tc[0][1]);
+            }
+            std::fprintf(vf, "\n");
+        }
+    }
     if (efb_dumping() && std::getenv("WIIKIT_DRAWLOG")) {         // debugging: where each draw lands
         static FILE* lf = std::fopen("drawlog.txt", "w");
         const GVtx& v0 = *reinterpret_cast<const GVtx*>(vtx);
@@ -611,9 +631,13 @@ void draw(uint8_t prim, uint8_t vflags, const uint8_t* pieces, uint32_t npieces)
                                c[2] = fx(0x1024) * pos[2] + fx(0x1025); c[3] = -pos[2]; }
         else { c[0] = fx(0x1020) * pos[0] + fx(0x1021); c[1] = fx(0x1022) * pos[1] + fx(0x1023);
                c[2] = fx(0x1024) * pos[2] + fx(0x1025); c[3] = 1; }
-        std::fprintf(lf, "%ld prim %02X n %u zm %X cm %X pix %X at %X ztex %X fog %X | vp %g %g %g %g %g %g | proj%u %g %g %g %g %g %g | "
+        auto ti = texs.find((uint32_t)map_src[0]);
+        int tw = ti == texs.end() ? -1 : ti->second.w, th = ti == texs.end() ? -1 : ti->second.h;
+        std::fprintf(lf, "%ld prim %02X n %u zm %X cm %X pix %X at %X ztex %X fog %X col %02X%02X%02X%02X sci %X %X sco %X tex0 %llX %d %d tc %g %g tev0 %X %X | vp %g %g %g %g %g %g | proj%u %g %g %g %g %g %g | "
                      "mtx %u obj %g %g %g eye %g %g %g ndc %g %g w %g | tev %u chans %u\n",
                      (long)cnt.draws, prim, n, bp[0x40], bp[0x41], bp[0x43], bp[0xF3], bp[0xF4], bp[0xF1],
+                     v0.col[0][0], v0.col[0][1], v0.col[0][2], v0.col[0][3], bp[0x20], bp[0x21], bp[0x59],
+                     (unsigned long long)map_src[0], tw, th, (double)v0.tc[0][0], (double)v0.tc[0][1], bp[0xC0], bp[0xC1],
                      fx(0x101A), fx(0x101B), fx(0x101C), fx(0x101D), fx(0x101E), fx(0x101F),
                      xf[0x1026], fx(0x1020), fx(0x1021), fx(0x1022), fx(0x1023), fx(0x1024), fx(0x1025),
                      v0.mtx[0], v0.pos[0], v0.pos[1], v0.pos[2], pos[0], pos[1], pos[2], c[0] / c[3], c[1] / c[3], c[3],
@@ -1226,10 +1250,15 @@ void update_pad() {
     static const char* script = std::getenv("WIIKIT_PAD");
     uint32_t scripted = 0;
     static const Clock::time_point t0 = Clock::now();
+    static const bool pad_frames = std::getenv("WIIKIT_PAD_FRAME") != nullptr;
+    static const uint64_t f0 = cnt.frames;   // the frame the script starts on
     static float sx = 0, sy = 0;
     static bool spointer = false;
     if (script) {
-        double t = std::chrono::duration<double>(Clock::now() - t0).count();
+        // wall clock is fine interactively, but boot/loading moves it; frame
+        // numbers make a scripted run repeat: WIIKIT_PAD_FRAME=1
+        double t = pad_frames ? (double)(cnt.frames - f0) / 60.0
+                              : std::chrono::duration<double>(Clock::now() - t0).count();
         for (const char* q = script; *q;) {
             char* e;
             double at = std::strtod(q, &e);
@@ -1246,6 +1275,10 @@ void update_pad() {
                                                     0x8000, 0x0008, 0x0004, 0x0001, 0x0002};
                     const char* n = std::strchr(names, *q);
                     if (n && t >= at && t < at + 0.15) scripted |= bits[n - names];
+                    // u d l r: the left stick (for menus that only read it)
+                    static const char* sticks = "udlr";
+                    const char* s = std::strchr(sticks, *q);
+                    if (s && t >= at && t < at + 0.15) scripted |= kStick << (s - sticks);
                     if (*q == 'X' && t >= at && t < at + 0.15) p.shake = true;
                 }
             }
@@ -1259,12 +1292,16 @@ void update_pad() {
     // merged with its pad unless Input says one of them; the others their pads
     ClassicState c[4];
     int mode = input_mode();
-    if (mode != INPUT_MODE_PAD) {
+    // the script drives the pad in every input mode, not just the keyboard's
+    {
         static const uint32_t from_remote[][2] = {{0x0800, CL_A}, {0x0400, CL_B}, {0x0200, CL_X}, {0x0100, CL_Y},
                                                   {0x0010, CL_PLUS}, {0x1000, CL_MINUS}, {0x8000, CL_HOME},
                                                   {0x0008, CL_UP}, {0x0004, CL_DOWN}, {0x0001, CL_LEFT}, {0x0002, CL_RIGHT}};
         for (auto& m : from_remote)
             if (scripted & m[0]) cl |= m[1];
+        cl |= scripted & (kStick << 0 | kStick << 1 | kStick << 2 | kStick << 3);
+    }
+    if (mode != INPUT_MODE_PAD || cl) {
         ClassicState& k = c[0];
         k.connected = true;
         k.buttons = cl & 0xFFFF;
@@ -1320,6 +1357,7 @@ void present() {
 
 void setup() {
     glClipControl(GL_LOWER_LEFT, GL_ZERO_TO_ONE);
+    glEnable(GL_DEPTH_CLAMP);   // the console's depth range is not always inside 0..1
     glDisable(GL_DITHER);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     glPixelStorei(GL_PACK_ALIGNMENT, 1);

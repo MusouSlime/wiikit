@@ -104,6 +104,7 @@ struct Slot {
 };
 
 Slot g_slots[2];                             // 0: slot A (channel 0), 1: slot B (channel 1)
+bool exi_dbg = std::getenv("WIIKIT_EXIDBG") != nullptr;
 
 // ---- the card's storage ----------------------------------------------------------
 // Make the directory the cards are in, if it is not there.
@@ -222,6 +223,7 @@ uint8_t card_byte(Slot& s, uint8_t in) {
     uint8_t out = 0xFF;
     if (s.position == 0) {
         s.command = in;
+        if (exi_dbg) rt_log("exi: card cmd %02X", in);
         if (s.command == CMD_CLEAR_STATUS) {
             s.status &= ~(ST_PROGRAM_ERROR | ST_ERASE_ERROR);
             s.status |= ST_READY;
@@ -234,8 +236,8 @@ uint8_t card_byte(Slot& s, uint8_t in) {
     }
     switch (s.command) {
     case CMD_NINTENDO_ID:
-        // The size, in the code the card answers with: the dummy cycle,
-        // then the four bytes of the size.
+        // The card's size ID: dummy cycle, then the four bytes of the size
+        // code (0x10 for a 16 Mbit / 251 block card).
         if (s.position == 1) out = 0x80;
         else out = (uint8_t)(s.size_code >> (24 - (((s.position - 2) & 3) * 8)));
         break;
@@ -256,7 +258,8 @@ uint8_t card_byte(Slot& s, uint8_t in) {
         out = s.status;
         break;
     case CMD_READ_ID:
-        out = s.position == 1 ? (uint8_t)(CARD_ID >> 8) : (uint8_t)CARD_ID;
+        if (s.position == 1) out = (uint8_t)(CARD_ID >> 8);
+        else out = (uint8_t)((s.position & 1) ? CARD_ID : (CARD_ID >> 8));
         break;
     case CMD_SET_INTERRUPT:
         if (s.position == 1) s.interrupt_switch = in;
@@ -282,6 +285,7 @@ uint8_t card_byte(Slot& s, uint8_t in) {
         out = 0xFF;
         break;
     }
+    if (exi_dbg) rt_log("exi:   pos %u in %02X -> %02X", s.position, in, out);
     ++s.position;
     return out;
 }
@@ -294,6 +298,7 @@ void card_deselect(Slot& s) {
             for (uint32_t k = 0; k < BLOCK_SIZE && a + k < s.size(); ++k) s.data[a + k] = 0xFF;
             s.status |= ST_BUSY;
             s.status &= ~ST_READY;
+            rt_log("memcard: erased block %u", a / BLOCK_SIZE);
         }
     } else if (s.command == CMD_PAGE_PROGRAM) {
         if (s.position >= 5) {
@@ -313,6 +318,11 @@ void card_deselect(Slot& s) {
             write_file(s);
         }
     }
+    // The command is over: the card is ready again (the SDK polls for this).
+    s.status |= ST_READY;
+    s.status &= ~ST_BUSY;
+    if (s.command == CMD_SECTOR_ERASE || s.command == CMD_PAGE_PROGRAM) s.interrupt_set = true;
+    if (exi_dbg) rt_log("exi: deselect cmd %02X -> status %02X", s.command, s.status);
 }
 
 }  // namespace
@@ -328,7 +338,16 @@ bool memcard_init(const char* dir) {
     const std::string base = std::string(dir) + "/";
     load_card(g_slots[0], base + "A.raw", SIZE_251, now);
     load_card(g_slots[1], base + "B.raw", SIZE_251, now);
+    // The SDK checks the card's serial in the SRAM when it mounts one.
+    for (int i = 0; i < 2; ++i)
+        if (g_slots[i].present() && g_slots[i].data.size() >= 20)
+            sram_set_card_flash_id(i, g_slots[i].data.data());
     return true;
+}
+
+const uint8_t* memcard_header(int slot) {
+    if (slot < 0 || slot >= 2 || !g_slots[slot].present()) return nullptr;
+    return g_slots[slot].data.data();
 }
 
 bool memcard_present(int slot) { return slot >= 0 && slot < 2 && g_slots[slot].present(); }
@@ -343,6 +362,7 @@ uint8_t memcard_byte(int slot, uint8_t in) {
 void memcard_dma_read(int slot, uint32_t addr, uint32_t size) {
     if (slot < 0 || slot >= 2) return;
     Slot& s = g_slots[slot];
+    if (exi_dbg) rt_log("exi: card DMA read addr=%08X size=%u", addr, size);
     for (uint32_t i = 0; i < size; ++i) {
         uint32_t a = (s.address + i) & (s.size() - 1);
         uint8_t b = 0xFF;
@@ -354,6 +374,8 @@ void memcard_dma_read(int slot, uint32_t addr, uint32_t size) {
 void memcard_dma_write(int slot, uint32_t addr, uint32_t size) {
     if (slot < 0 || slot >= 2) return;
     Slot& s = g_slots[slot];
+    if (exi_dbg) rt_log("exi: card DMA write addr=%08X size=%u", addr, size);
+    if (s.command == CMD_PAGE_PROGRAM) rt_log("memcard: programmed %u bytes at %08X", size, s.address);
     for (uint32_t i = 0; i < size; ++i) {
         uint32_t a = (s.address + i) & (s.size() - 1);
         if (a >= s.size()) continue;

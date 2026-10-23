@@ -65,11 +65,7 @@ void count_icall(ICalls& ic, uint32_t addr) {
 void ppc_call_indirect(PPCContext& c, uint32_t addr) {
     if (ICalls* ic = icalls()) count_icall(*ic, addr);
     PPCFunc f = ppc_lookup(addr);
-    if (!f) {
-        std::fprintf(stderr, "wiikit: indirect call to %s, not a function\n", rt_name(addr).c_str());
-        rt_backtrace(c, stderr);
-        std::exit(1);
-    }
+    if (!f) rt_die("indirect call to %s, not a function", rt_name(addr).c_str());
     f(c);
 }
 
@@ -251,6 +247,17 @@ void rt_backtrace(const PPCContext& c, FILE* out, int max) {
     va_end(ap);
     std::fputc('\n', stderr);
     if (t_ppc) rt_backtrace(*t_ppc, stderr);
+    // keep a copy: a crash reached through a launcher would otherwise be lost
+    if (FILE* f = std::fopen("crash.log", "w")) {
+        va_list aq;
+        va_copy(aq, ap);
+        std::fprintf(f, "wiikit: ");
+        std::vfprintf(f, fmt, aq);
+        va_end(aq);
+        std::fputc('\n', f);
+        if (t_ppc) rt_backtrace(*t_ppc, f);
+        std::fclose(f);
+    }
     std::fflush(stderr);
     std::fflush(stdout);
     std::_Exit(1);

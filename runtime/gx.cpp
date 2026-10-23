@@ -268,7 +268,7 @@ void bind_map(int m) {
         }
         static const char* dump = std::getenv("WIIKIT_TEXDUMP");     // debugging: uploads as PNGs
         static int dumped = 0;
-        if (dump && dumped < 400 && w * h >= 4096) {
+        if (dump && dumped < 400) {
             char name[512];
             std::snprintf(name, sizeof name, "%s/tex_%04d_%08X_f%u_%dx%d.png", dump, dumped++, addr, fmt, w, h);
             write_png(name, w, h, rec.data() + at);

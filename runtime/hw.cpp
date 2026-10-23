@@ -485,6 +485,9 @@ uint8_t ipl_byte(uint8_t in) {
         return write ? 0 : (uint8_t)(t >> (8 * (3 - (a - 0x800000))));
     }
     if (a >= 0x800004 && a < 0x800044) {
+        static const bool sram_dbg = std::getenv("WIIKIT_SRAMDBG") != nullptr;
+        if (sram_dbg && (write || (a >= 0x800014 && a < 0x80002C) || (a >= 0x80003A && a < 0x80003C)))
+            rt_log("sram: %s %06X -> %02X/%02X", write ? "write" : "read", a, sram[a - 0x800004], in);
         if (write) { sram[a - 0x800004] = in; return 0; }
         return sram[a - 0x800004];
     }
@@ -550,8 +553,15 @@ void exi_transfer(int ch) {
 }
 
 bool exi_irq() {
-    for (auto& e : exi)
+    for (int ch = 0; ch < 3; ++ch) {
+        Exi& e = exi[ch];
         if (((e.csr & 8) && (e.csr & 4)) || ((e.csr & 2) && (e.csr & 1))) return true;
+        // the card's own interrupt (a page programmed, a sector erased): the
+        // status is not stored in the CSR, it comes from the card, so the
+        // mask bit alone cannot see it. Without this the SDK's EXI handler is
+        // never called and an async save stops after its first command.
+        if (ch < 2 && memcard_present(ch) && memcard_interrupt(ch) && (e.csr & 1)) return true;
+    }
     return false;
 }
 
@@ -721,6 +731,7 @@ void si_transfer(uint32_t csr) {
     case 0x40: {                                                  // the state, directly
         uint32_t hi, lo;
         si_pad_state(port, hi, lo);
+        if (si_dbg && (hi & 0xFF0000)) rt_log("si: port %d buttons %06X", port, hi >> 16);
         for (int i = 0; i < 4; ++i) { reply[i] = (uint8_t)(hi >> (24 - 8 * i)); reply[4 + i] = (uint8_t)(lo >> (24 - 8 * i)); }
         n = 8;
         break;
@@ -923,6 +934,33 @@ void mmio_write(uint32_t a, uint32_t v, int size) {
 }
 
 }  // namespace
+
+// The card's serial goes into the SRAM the way the console's unlock does: the
+// SDK's CARDMount, when the card is already unlocked, reads this back and
+// compares its checksum instead of running the unlock (Dolphin does the same).
+// The stored bytes are the header's first twelve, obfuscated by a PRNG seeded
+// from the eight bytes after them.
+void sram_set_card_flash_id(int slot, const uint8_t* header) {
+    if (slot < 0 || slot > 1) return;
+    uint8_t* flash = sram + 0x14 + slot * 12;     // SRAM 0x18, the extended area's start
+    uint64_t rand = 0;
+    for (int i = 0; i < 8; ++i) rand = (rand << 8) | header[12 + i];
+    uint8_t csum = 0;
+    for (int i = 0; i < 12; ++i) {
+        rand = (rand * 0x41c64e6dULL + 0x3039ULL) >> 16;
+        uint8_t v = (uint8_t)(header[i] - (uint8_t)(rand & 0xff));
+        flash[i] = v;
+        csum += v;
+        rand = (rand * 0x41c64e6dULL + 0x3039ULL) >> 16;
+        rand &= 0x7fff;
+    }
+    sram[0x3A + slot] = (uint8_t)(csum ^ 0xFF);   // SRAM 0x3E, the extended area's checksums
+    if (std::getenv("WIIKIT_SRAMDBG"))
+        rt_log("sram: card %d hdr %02X%02X%02X%02X %02X%02X%02X%02X flash id %02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X cs %02X",
+               slot, header[0], header[1], header[2], header[3], header[12], header[13], header[14], header[15],
+               flash[0], flash[1], flash[2], flash[3], flash[4], flash[5], flash[6], flash[7],
+               flash[8], flash[9], flash[10], flash[11], sram[0x3A + slot]);
+}
 
 uint32_t ppc_mmio_read(uint32_t a, int size) {
     std::lock_guard<std::recursive_mutex> lk(g_hw);

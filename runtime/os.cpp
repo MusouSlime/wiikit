@@ -40,6 +40,8 @@
 #endif
 #else
 #include <pthread.h>
+#include <csignal>
+#include <ucontext.h>
 #endif
 
 std::atomic<uint32_t> g_ppc_pending{0};
@@ -168,12 +170,20 @@ void adopt(uint32_t ctx) {
 }
 
 // ---- the hooks -------------------------------------------------------------------------------
+// The SDK's OSLoadContext restores a context and returns to it with an rfi:
+// it does not come back. An interrupt handler that ends its interrupt this
+// way (the SDK's own decrementer handler does, when no alarm is pending)
+// therefore never reaches the code after the call. The runtime's hook
+// returns to the handler instead, so the handler must be left: this
+// exception unwinds it, and the interrupted code goes on.
+struct InterruptEnd {};
+
 void hle_OSLoadContext(PPCContext& c) {
     uint32_t x = c.r[3];
     HostThread* self = t_self;
     uint16_t st = ld16(x + CTX_STATE);
     if (st & CTX_STATE_EXC) st16(x + CTX_STATE, st & ~CTX_STATE_EXC);
-    if (!self->delivering.empty() && self->delivering.back() == x) return;  // end of an interrupt
+    if (!self->delivering.empty() && self->delivering.back() == x) throw InterruptEnd();  // end of an interrupt
     if (x == self->ctx) return;                                             // this thread goes on
     HostThread* to;
     {
@@ -366,10 +376,44 @@ void deliver(PPCContext& c, int exc) {
     self->delivering.push_back(ctx);
     PPCContext* outer = t_ppc;
     t_ppc = self->cur = &e;
-    ppc_call_indirect(e, handler);
+    try {
+        ppc_call_indirect(e, handler);
+    } catch (const InterruptEnd&) {
+        // the handler ended the interrupt: the interrupted code goes on
+    }
     t_ppc = self->cur = outer;
     self->delivering.pop_back();
 }
+
+#ifndef _WIN32
+void on_signal(int sig, siginfo_t* si, void*) {
+    static volatile sig_atomic_t busy = 0;
+    if (busy) _Exit(128 + sig);
+    busy = 1;
+    const char* what = sig == SIGSEGV ? "segmentation fault" : sig == SIGBUS ? "bus fault"
+                     : sig == SIGFPE ? "arithmetic fault" : sig == SIGILL ? "illegal instruction"
+                     : "abort";
+    uintptr_t a = (uintptr_t)(si ? si->si_addr : nullptr);
+    if (g_mem && a >= (uintptr_t)g_mem && a - (uintptr_t)g_mem < (uint64_t(1) << 32))
+        std::fprintf(stderr, "wiikit: host %s at guest %08X\n", what, (uint32_t)(a - (uintptr_t)g_mem));
+    else
+        std::fprintf(stderr, "wiikit: host %s at %p\n", what, (void*)a);
+    if (PPCContext* c = t_ppc) {
+        std::fprintf(stderr, "wiikit: guest lr %s, ctr %s, r1 %08X\n",
+                     rt_name(c->lr).c_str(), rt_name(c->ctr).c_str(), c->r[1]);
+        rt_backtrace(*c, stderr);
+        if (FILE* f = std::fopen("crash.log", "w")) {
+            std::fprintf(f, "wiikit: host %s at %p\nguest lr %s, ctr %s, r1 %08X\n",
+                         what, (void*)a, rt_name(c->lr).c_str(), rt_name(c->ctr).c_str(), c->r[1]);
+            rt_backtrace(*c, f);
+            std::fclose(f);
+        }
+    }
+    std::fflush(stderr);
+    std::fflush(stdout);
+    _Exit(128 + sig);
+}
+#endif
 
 #ifdef _WIN32
 LONG WINAPI on_crash(EXCEPTION_POINTERS* ep) {
@@ -485,11 +529,21 @@ void os_install() {
         set(GetCurrentProcess(), ProcessPowerThrottling, &pt, sizeof pt);
     }
     AddVectoredExceptionHandler(1, on_crash);
+#else
+    struct sigaction sa = {};
+    sa.sa_sigaction = on_signal;
+    sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+    sigemptyset(&sa.sa_mask);
+    for (int s : {SIGSEGV, SIGBUS, SIGFPE, SIGILL, SIGABRT}) sigaction(s, &sa, nullptr);
 #endif
     ppc_hook("OSLoadContext", hle_OSLoadContext);
     orig_OSSaveContext = ppc_hook("OSSaveContext", hle_OSSaveContext);
     orig_OSCreateThread = ppc_hook("OSCreateThread", hle_OSCreateThread);
-    if (!orig_OSSaveContext || !orig_OSCreateThread) rt_die("the OS hooks are missing from the build");
+    if (!orig_OSSaveContext) rt_die("the OS hooks are missing from the build");
+    // OSCreateThread is not always linked in: a game whose SDK never creates
+    // a thread has no need of it, and the linker leaves it out. Such a game
+    // has no thread to start, and the runtime's thread model is not used.
+    if (!orig_OSCreateThread) rt_log("wiikit: the game has no OSCreateThread: it creates no threads");
     ppc_hook("__write_console", hle_write_console);
     ppc_hook("PPCHalt", hle_PPCHalt);
     ppc_hook("OSFatal", hle_OSFatal);
@@ -498,7 +552,6 @@ void os_install() {
     ppc_hook("RealMode", [](PPCContext&) {});  // BAT set-up: the address space is flat already
     std::thread(clock_main).detach();
 }
-
 // Where the running guest thread is (its registers' summary and call chain),
 // and where the parked ones wait.
 void os_report_running(int depth) {

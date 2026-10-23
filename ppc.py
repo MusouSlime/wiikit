@@ -464,6 +464,12 @@ class Tracker:
         if op == "addis" and f["A"] == 0:
             self.regs[f["D"]] = (f["simm"] << 16) & 0xFFFFFFFF
             return None
+        # a register move: `mr rD, rS` decodes as `or rD, rS, rS` (S and B are
+        # the sources, A the destination here). Keep the constant across it:
+        # table dispatches are often `lis/addi`, then `mr` into the index base.
+        if op == "or" and f.get("S") == f.get("B") and f.get("S") in self.regs:
+            self.regs[f["A"]] = self.regs[f["S"]]
+            return None
         base = f.get("A")
         if op in ("addi", "ori") and base in self.regs and (op == "ori" or base != 0):
             v = self.regs[base]

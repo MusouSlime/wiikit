@@ -396,6 +396,7 @@ std::string fragment_shader(const uint32_t* bp) {
         w(s, "    if (!((%s) %s (%s))) discard;\n", t0, lg[logic], t1);
     }
     fog(s, bp);
+    if (std::getenv("WIIKIT_FORCEWHITE")) s += "    fin = ivec4(255, 0, 0, 255);\n";
     s += "    o_blend = vec4(fin) / 255.0;\n    o_col = o_blend;\n";
     if (bp[0x42] >> 8 & 1) s += "    o_col.a = float(u_alpha.z) / 255.0;\n";
     s += "}\n";
