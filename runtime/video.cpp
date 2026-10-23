@@ -1413,9 +1413,9 @@ void setup() {
                        {7, 4, GL_FLOAT, false, false, offsetof(GVtx, tc) + 16},
                        {8, 4, GL_FLOAT, false, false, offsetof(GVtx, tc) + 32},
                        {9, 4, GL_FLOAT, false, false, offsetof(GVtx, tc) + 48},
-                       {10, 4, GL_UNSIGNED_BYTE, false, true, offsetof(GVtx, mtx)},
-                       {11, 4, GL_UNSIGNED_BYTE, false, true, offsetof(GVtx, mtx) + 4},
-                       {12, 4, GL_UNSIGNED_BYTE, false, true, offsetof(GVtx, mtx) + 8}};
+                       {10, 4, GL_UNSIGNED_BYTE, false, false, offsetof(GVtx, mtx)},
+                       {11, 4, GL_UNSIGNED_BYTE, false, false, offsetof(GVtx, mtx) + 4},
+                       {12, 4, GL_UNSIGNED_BYTE, false, false, offsetof(GVtx, mtx) + 8}};
     for (const A& a : attrs) {
         glEnableVertexArrayAttrib(vao, a.loc);
         if (a.integer) glVertexArrayAttribIFormat(vao, a.loc, a.n, a.type, (GLuint)a.off);

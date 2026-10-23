@@ -45,9 +45,9 @@ layout(location = 6) in vec4 a_tc01;
 layout(location = 7) in vec4 a_tc23;
 layout(location = 8) in vec4 a_tc45;
 layout(location = 9) in vec4 a_tc67;
-layout(location = 10) in uvec4 a_mtx0;
-layout(location = 11) in uvec4 a_mtx1;
-layout(location = 12) in uvec4 a_mtx2;
+layout(location = 10) in vec4 a_mtx0;
+layout(location = 11) in vec4 a_mtx1;
+layout(location = 12) in vec4 a_mtx2;
 out vec4 v_col0;
 out vec4 v_col1;
 out vec3 v_tc[8];
@@ -80,9 +80,9 @@ vec4 light(uint i, uint attn_fn, uint diff_fn, vec3 pos, vec3 nrm) {
 }
 void main() {
     vec4 p = vec4(a_pos, 1.0);
-    uint pm = a_mtx0.x * 4u;
+    uint pm = uint(a_mtx0.x + 0.5) * 4u;
     vec3 pos = vec3(dot(R(pm), p), dot(R(pm + 4u), p), dot(R(pm + 8u), p));
-    uint nm = 0x400u + (a_mtx0.x & 31u) * 3u;
+    uint nm = 0x400u + (uint(a_mtx0.x + 0.5) & 31u) * 3u;
     vec3 nrm = vec3(dot(R3(nm), a_nrm), dot(R3(nm + 3u), a_nrm), dot(R3(nm + 6u), a_nrm));
     if (dot(nrm, nrm) > 0.0) nrm = normalize(nrm);
     vec4 clip;
@@ -126,8 +126,9 @@ std::string vertex_shader(const uint32_t* xf, uint8_t vflags) {
     if (nchan < 2) s += (vflags & VTX_COL1) ? "    v_col1 = a_col1;\n" : "    v_col1 = v_col0;\n";
     static const char* tcsrc[8] = {"a_tc01.xy", "a_tc01.zw", "a_tc23.xy", "a_tc23.zw",
                                    "a_tc45.xy", "a_tc45.zw", "a_tc67.xy", "a_tc67.zw"};
-    static const char* tmidx[8] = {"a_mtx0.y", "a_mtx0.z", "a_mtx0.w", "a_mtx1.x",
-                                   "a_mtx1.y", "a_mtx1.z", "a_mtx1.w", "a_mtx2.x"};
+    static const char* tmidx[8] = {"uint(a_mtx0.y + 0.5)", "uint(a_mtx0.z + 0.5)", "uint(a_mtx0.w + 0.5)",
+                                   "uint(a_mtx1.x + 0.5)", "uint(a_mtx1.y + 0.5)", "uint(a_mtx1.z + 0.5)",
+                                   "uint(a_mtx1.w + 0.5)", "uint(a_mtx2.x + 0.5)"};
     bool dual = xf[0x1012] & 1;
     for (uint32_t i = 0; i < 8; ++i) {
         if (i >= ntg) { w(s, "    v_tc[%u] = vec3(0.0);\n", i); continue; }
