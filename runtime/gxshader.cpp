@@ -15,6 +15,7 @@
 #include "video.h"
 #include <cstdarg>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 
 namespace {
