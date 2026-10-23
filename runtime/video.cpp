@@ -1373,9 +1373,16 @@ void setup() {
     glCreateFramebuffers(1, &efb_fbo);
     glNamedFramebufferTexture(efb_fbo, GL_COLOR_ATTACHMENT0, efb_col, 0);
     glNamedFramebufferTexture(efb_fbo, GL_DEPTH_ATTACHMENT, efb_dep, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, efb_fbo);
+    GLenum color0 = GL_COLOR_ATTACHMENT0;
+    glDrawBuffers(1, &color0);
+    glReadBuffer(GL_COLOR_ATTACHMENT0);
     if (glCheckNamedFramebufferStatus(efb_fbo, GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
         rt_die("video: the EFB framebuffer is incomplete");
     glCreateFramebuffers(1, &copy_fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, copy_fbo);
+    glDrawBuffers(1, &color0);
+    glReadBuffer(GL_COLOR_ATTACHMENT0);
     glBindFramebuffer(GL_FRAMEBUFFER, efb_fbo);
     glClearColor(0, 0, 0, 1);
     glClearDepth(1.0);

@@ -80,6 +80,8 @@
     X(PFNGLCREATEFRAMEBUFFERSPROC, glCreateFramebuffers)                                            \
     X(PFNGLNAMEDFRAMEBUFFERTEXTUREPROC, glNamedFramebufferTexture)                                  \
     X(PFNGLBINDFRAMEBUFFERPROC, glBindFramebuffer)                                                  \
+    X(PFNGLDRAWBUFFERSPROC, glDrawBuffers)                                                          \
+    X(PFNGLREADBUFFERPROC, glReadBuffer)                                                            \
     X(PFNGLBLITNAMEDFRAMEBUFFERPROC, glBlitNamedFramebuffer)                                        \
     X(PFNGLCHECKNAMEDFRAMEBUFFERSTATUSPROC, glCheckNamedFramebufferStatus)
 
